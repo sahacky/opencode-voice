@@ -7,63 +7,56 @@
 - `/s` — закончить: расшифровка через whisper вставляется **в поле ввода** (не отправляется —
   можно поправить и нажать Enter) и параллельно кладётся в буфер обмена
 
+Работает в WSL2 и на нативном Linux.
+
+## Быстрая установка
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sahacky/opencode-voice/main/install.sh | bash
+```
+
+Скрипт сам:
+
+1. определит среду (WSL2 или нативный Linux);
+2. поставит недостающие зависимости — ffmpeg (на нативном Linux через apt; в WSL2 скачает
+   сборку для Windows в `%USERPROFILE%\.voice\bin`, если ffmpeg там не установлен);
+3. соберёт whisper.cpp и скачает модель (по умолчанию `small`, ~466 МБ; другой размер —
+   `VOICE_MODEL=tiny|base|small bash install.sh`);
+4. положит плагин в `~/.config/opencode/plugins/` (opencode грузит такие плагины сам,
+   править `opencode.json` не нужно);
+5. создаст команды `/r` и `/s`.
+
+После установки перезапусти opencode. Для сборки whisper.cpp нужен `git`, `cmake` и
+компилятор — скрипт установит их через apt, спросив sudo.
+
+Ручная установка — те же шаги из тела `install.sh`, плюс опции плагина (см. ниже).
+
 ## Как это работает
 
 Плагин перехватывает команды `/r` и `/s` хуком `command.execute.before` и обрывает их
-шаблон (`throw`), чтобы в чат не уходило пустое сообщение. Запись идёт на стороне Windows:
-плагин запускает `voice-rec.ps1` (ffmpeg + dshow, 16 kHz mono), остановка — через файл-флаг
-в TEMP Windows. Расшифровка — `whisper-cli` напрямую, текст чистится (слова-паразиты,
-заглавные, команды «новая строка»/«абзац»/«отступ»). Результат доставляется через
-`POST /tui/append-prompt` и `Set-Clipboard`.
+шаблон (`throw`), чтобы в чат не уходило пустое сообщение.
 
-## Требования
+| | WSL2 | нативный Linux |
+| --- | --- | --- |
+| Запись | `voice-rec.ps1`: ffmpeg (dshow) на стороне Windows, остановка через файл-флаг в TEMP | `ffmpeg -f pulse` (или alsa), остановка по SIGINT |
+| Расшифровка | `whisper-cli` в WSL | `whisper-cli` локально |
+| Буфер обмена | `Set-Clipboard` | `wl-copy` (Wayland) / `xclip` (X11) |
 
-- opencode >= 1.18 (TUI), WSL2 + Windows с микрофоном (работа из Windows-стороны не нужна —
-  только WSL)
-- ffmpeg на стороне Windows (`ffmpeg` в PATH Windows)
-- собранный [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (`whisper-cli`) и ggml-модель
-  на стороне WSL
+Текст чистится: слова-паразиты, невербальные блоки вида `[музыка]`, заглавные буквы,
+команды «новая строка» / «абзац» / «отступ». Результат доставляется через
+`POST /tui/append-prompt` и в буфер обмена.
 
-## Установка
+## Опции
 
-1. Скопировать репозиторий, например в `~/opencode-voice`.
-
-2. Зарегистрировать плагин в `~/.config/opencode/opencode.json`:
+Задаются в `~/.config/opencode-voice/config.json` (создаётся установщиком) или в
+`opencode.json` как опции плагина — последние имеют приоритет:
 
 ```json
 {
-  "plugin": [
-    ["~/opencode-voice/src/index.ts", {
-      "whisperBin": "/home/me/whisper.cpp/build/bin/whisper-cli",
-      "model": "/home/me/models/ggml-small.bin"
-    }]
-  ]
+  "submit": false,
+  "language": "ru"
 }
 ```
-
-3. Создать две команды-триггера — файлы с **пустым** шаблоном
-   (например `~/.config/opencode/commands/r.md`):
-
-```markdown
----
-description: ● Голос: начать запись
----
-```
-
-и `~/.config/opencode/commands/s.md`:
-
-```markdown
----
-description: ■ Голос: закончить — текст в поле ввода
----
-```
-
-Имена файлов = имена команд; если меняете их, поменяйте и проверку
-`input.command === "r"` в плагине.
-
-4. Перезапустить opencode — конфиг и плагины читаются только при старте.
-
-## Опции
 
 | Опция | По умолчанию | Описание |
 | --- | --- | --- |
@@ -71,10 +64,13 @@ description: ■ Голос: закончить — текст в поле вв�
 | `maxSeconds` | `300` | Потолок длины записи, с |
 | `toastMs` | `3000` | Длительность обычного тоста, мс |
 | `language` | `"ru"` | Язык распознавания whisper |
-| `recorder` | `src/voice-rec.ps1` | Скрипт записи (идёт в комплекте) |
-| `whisperBin` | — | Путь к `whisper-cli` |
-| `model` | — | Путь к ggml-модели |
-| `debugLog` | `""` | Путь к JSONL-логу диагностики; пусто — лог выключен |
+| `audioDriver` | `"pulse"` | Нативный Linux: `pulse` или `alsa` |
+| `audioSource` | `"default"` | Имя pulse-источника / alsa-устройства |
+| `recorder` | `src/voice-rec.ps1` | WSL: скрипт записи (идёт в комплекте) |
+| `ffmpegBin` | `"ffmpeg"` | Нативный Linux: путь к ffmpeg |
+| `whisperBin` | `~/.voice/whisper.cpp/build/bin/whisper-cli` | Путь к `whisper-cli` |
+| `model` | `~/.voice/models/ggml-small.bin` | Путь к ggml-модели |
+| `debugLog` | `""` | Путь к логу диагностики; пусто — лог выключен |
 
 ## Ограничения
 
@@ -83,7 +79,7 @@ description: ■ Голос: закончить — текст в поле вв�
   слэш-команды и палитра команд (`ctrl+p`).
 - Отмена шаблона команды выполняется через `throw` в хуке — opencode отвечает на такую
   команду ошибкой с текстом-статусом («voice: запись начата»).
-- Первый вызов команды (~0.5 с) уходит на запуск powershell — дальше кэшируется.
+- Первый вызов команды (~0.5 с в WSL) уходит на запуск powershell — дальше кэшируется.
 
 ## Лицензия
 

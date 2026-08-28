@@ -2,13 +2,24 @@
 // Команды /r (начать запись) и /s (закончить): расшифровка через whisper
 // вставляется в поле ввода TUI (tui/append-prompt) и кладётся в буфер обмена.
 // Индикатор записи — тосты с таймером.
-// Микрофон живёт на стороне Windows, поэтому запись идёт через powershell.exe/ffmpeg,
-// а завершение записи — через файл-флаг в TEMP Windows.
-import { appendFileSync, existsSync, rmSync, statSync, writeFileSync } from "node:fs"
+//
+// Платформы:
+//   WSL2          — микрофон через powershell.exe/ffmpeg (dshow), буфер через Set-Clipboard,
+//                   остановка записи — файл-флаг в TEMP Windows (voice-rec.ps1)
+//   нативный Linux — ffmpeg (pulse/alsa) напрямую, остановка по SIGINT,
+//                   буфер через wl-copy (Wayland) или xclip (X11)
+import { appendFileSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
+import { join } from "node:path"
 
 declare const Bun: any
 
 const PS = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+
+const isWSL = (() => {
+    try { return /microsoft/i.test(readFileSync("/proc/sys/kernel/osrelease", "utf8")) }
+    catch { return false }
+})()
 
 function cleanText(raw: string): string {
     let text = raw.split(/\s+/).join(" ").trim()
@@ -33,24 +44,33 @@ function cleanText(raw: string): string {
     return lines.join("\n").trim()
 }
 
-export const OpencodeVoice = async ({ client, $ }: any, options?: any) => {
+export const OpencodeVoice = async ({ client }: any, options?: any) => {
+    // Приоритет: опции из opencode.json > ~/.config/opencode-voice/config.json > дефолты
+    let fileOpts: any = {}
+    try {
+        fileOpts = JSON.parse(readFileSync(join(homedir(), ".config", "opencode-voice", "config.json"), "utf8"))
+    } catch {}
+
     const opts = {
         submit: false,                       // после вставки сразу отправить промпт
         maxSeconds: 300,                     // потолок записи
         toastMs: 3000,                       // сколько висит обычный тост
         language: "ru",
-        // всё, что нужно для распознавания; по умолчанию — установленный ~/voice
-        recorder: import.meta.dir + "/voice-rec.ps1",
-        whisperBin: "/home/llm/voice/whisper.cpp/build/bin/whisper-cli",
-        model: "/home/llm/voice/models/ggml-small.bin",
+        audioDriver: "pulse",                // нативный Linux: pulse | alsa
+        audioSource: "default",              // pulse-источник или alsa-устройство
+        recorder: import.meta.dir + "/voice-rec.ps1",     // WSL: скрипт записи (идёт в комплекте)
+        ffmpegBin: "ffmpeg",                 // нативный Linux: бинарь ffmpeg
+        whisperBin: join(homedir(), ".voice", "whisper.cpp", "build", "bin", "whisper-cli"),
+        model: join(homedir(), ".voice", "models", "ggml-small.bin"),
         debugLog: "",
+        ...fileOpts,
         ...(options || {}),
     }
 
     interface Rec {
         pid: number
-        wav: string   // wsl-путь
-        flag: string  // wsl-путь файла-флага остановки
+        wav: string
+        flag: string        // WSL: файл-флаг остановки; на нативном Linux пусто
         startedAt: number
         hb: ReturnType<typeof setInterval>
     }
@@ -62,14 +82,15 @@ export const OpencodeVoice = async ({ client, $ }: any, options?: any) => {
         if (!opts.debugLog) return
         try { appendFileSync(opts.debugLog, `${new Date().toISOString()} ${msg}\n`) } catch {}
     }
-    dbg("plugin loaded")
+    dbg(`plugin loaded (isWSL=${isWSL})`)
 
-    const wslPath = (win: string) => `/mnt/${win[0].toLowerCase()}${win.slice(2)}`.replace(/\\/g, "/")
     const stamp = () => {
         const d = new Date()
         const p = (n: number) => String(n).padStart(2, "0")
         return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
     }
+
+    const wslPath = (win: string) => `/mnt/${win[0].toLowerCase()}${win.slice(2)}`.replace(/\\/g, "/")
 
     async function toast(message: string, variant: "info" | "success" | "warning" | "error" = "info", duration = opts.toastMs) {
         try {
@@ -98,17 +119,32 @@ export const OpencodeVoice = async ({ client, $ }: any, options?: any) => {
     }
 
     async function toClipboard(text: string) {
+        if (isWSL) {
+            try {
+                const tmpWin = `${await getWinTemp()}\\voice-clip.txt`
+                writeFileSync(wslPath(tmpWin), "\uFEFF" + text)
+                const p = Bun.spawn(
+                    [
+                        PS, "-NoProfile", "-Command",
+                        `[System.IO.File]::ReadAllText('${tmpWin}', [System.Text.Encoding]::UTF8) | Set-Clipboard; Remove-Item '${tmpWin}'`,
+                    ],
+                    { stdout: "ignore", stderr: "ignore" },
+                )
+                await p.exited
+            } catch (e) {
+                dbg(`clipboard failed: ${e}`)
+            }
+            return
+        }
+
+        // нативный Linux: wl-copy (Wayland) или xclip (X11)
         try {
-            const tmpWin = `${await getWinTemp()}\\voice-clip.txt`
-            writeFileSync(wslPath(tmpWin), "\uFEFF" + text)
-            const p = Bun.spawn(
-                [
-                    PS, "-NoProfile", "-Command",
-                    `[System.IO.File]::ReadAllText('${tmpWin}', [System.Text.Encoding]::UTF8) | Set-Clipboard; Remove-Item '${tmpWin}'`,
-                ],
-                { stdout: "ignore", stderr: "ignore" },
-            )
-            await p.exited
+            const tmp = join(tmpdir(), `voice-clip-${stamp()}.txt`)
+            writeFileSync(tmp, text)
+            const cmd = process.env.WAYLAND_DISPLAY
+                ? `wl-copy < '${tmp}'`
+                : `xclip -selection clipboard -i '${tmp}'`
+            Bun.spawn(["bash", "-c", cmd], { stdout: "ignore", stderr: "ignore" })
         } catch (e) {
             dbg(`clipboard failed: ${e}`)
         }
@@ -118,30 +154,50 @@ export const OpencodeVoice = async ({ client, $ }: any, options?: any) => {
         dbg(`start called, rec=${!!rec}`)
         if (rec) { await toast("● Запись уже идёт — введи /s чтобы закончить", "warning"); return }
 
-        const temp = await getWinTemp()
-        if (!temp) { await toast("voice: не удалось определить TEMP Windows", "error"); return }
-        if (!recorderWin) recorderWin = await toWinPath(opts.recorder)
-
-        const s = stamp()
-        const wavWin = `${temp}\\voice-rec-${s}.wav`
-        const flagWin = `${temp}\\voice-rec.stop`
-        const wav = wslPath(wavWin)
-        const flag = wslPath(flagWin)
-        rmSync(flag, { force: true })
+        let wav: string
+        let pid: number
+        let flag = ""
 
         try {
-            const proc = Bun.spawn(
-                [PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", recorderWin, "-Wav", wavWin, "-StopFlag", flagWin],
-                { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
-            )
-            dbg(`spawned pid=${proc.pid} wav=${wavWin}`)
-            rec = { pid: proc.pid, wav, flag, startedAt: Date.now(), hb: null as any }
+            if (isWSL) {
+                const temp = await getWinTemp()
+                if (!temp) { await toast("voice: не удалось определить TEMP Windows", "error"); return }
+                if (!recorderWin) recorderWin = await toWinPath(opts.recorder)
+
+                const s = stamp()
+                const wavWin = `${temp}\\voice-rec-${s}.wav`
+                const flagWin = `${temp}\\voice-rec.stop`
+                wav = wslPath(wavWin)
+                flag = wslPath(flagWin)
+                rmSync(flag, { force: true })
+
+                const proc = Bun.spawn(
+                    [PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", recorderWin, "-Wav", wavWin, "-StopFlag", flagWin],
+                    { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+                )
+                pid = proc.pid
+            } else {
+                wav = join(tmpdir(), `voice-rec-${stamp()}.wav`)
+                const proc = Bun.spawn(
+                    [
+                        opts.ffmpegBin, "-y", "-hide_banner", "-loglevel", "error",
+                        "-f", opts.audioDriver, "-i", opts.audioSource,
+                        "-t", String(opts.maxSeconds), "-ar", "16000", "-ac", "1", wav,
+                    ],
+                    { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+                )
+                pid = proc.pid
+            }
+            dbg(`spawned pid=${pid} wav=${wav}`)
         } catch (e) {
             dbg(`spawn failed: ${e}`)
-            await toast("voice: не удалось запустить рекордер", "error")
+            await toast(isWSL
+                ? "voice: не удалось запустить рекордер (нужен ffmpeg на стороне Windows)"
+                : "voice: не удалось запустить ffmpeg (apt install ffmpeg)", "error")
             return
         }
 
+        rec = { pid, wav, flag, startedAt: Date.now(), hb: null as any }
         rec.hb = setInterval(async () => {
             if (!rec) return
             const sec = (Date.now() - rec.startedAt) / 1000
@@ -158,9 +214,10 @@ export const OpencodeVoice = async ({ client, $ }: any, options?: any) => {
         rec = null
         clearInterval(hb)
 
-        writeFileSync(flag, "stop")
+        if (flag) writeFileSync(flag, "stop")            // WSL: voice-rec.ps1 сам завершит ffmpeg
+        else { try { process.kill(pid, "SIGINT") } catch {} }  // нативный Linux: SIGINT финализирует wav
         for (let i = 0; i < 80; i++) {
-            try { process.kill(pid, 0); } catch { break }
+            try { process.kill(pid, 0) } catch { break }
             await new Promise((r) => setTimeout(r, 100))
         }
         try { process.kill(pid, "SIGKILL") } catch {}
@@ -178,7 +235,7 @@ export const OpencodeVoice = async ({ client, $ }: any, options?: any) => {
             }
         }
         rmSync(wav, { force: true })
-        rmSync(flag, { force: true })
+        if (flag) rmSync(flag, { force: true })
 
         if (!text) {
             dbg("transcript empty")

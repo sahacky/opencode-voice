@@ -6,13 +6,23 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
-if (-not $ff) {
+$ffPath = $null
+$cmd = Get-Command ffmpeg -ErrorAction SilentlyContinue
+if (-not $cmd) {
     $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
                 [Environment]::GetEnvironmentVariable('Path', 'User')
-    $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
+    $cmd = Get-Command ffmpeg -ErrorAction SilentlyContinue
 }
-if (-not $ff) { exit 1 }
+if ($cmd) { $ffPath = $cmd.Source }
+if (-not $ffPath) {
+    # сюда install.sh кладёт ffmpeg, если в PATH его нет
+    $local = Join-Path $env:USERPROFILE '.voice\bin\ffmpeg.exe'
+    if (Test-Path $local) { $ffPath = $local }
+}
+if (-not $ffPath) {
+    Write-Error 'ffmpeg not found'
+    exit 1
+}
 
 if (-not $Wav) { exit 1 }
 if (-not $StopFlag) { $StopFlag = Join-Path $env:TEMP 'voice-rec.stop' }
@@ -26,7 +36,7 @@ if (Test-Path $ConfigPath) {
 if (-not $Device) { exit 1 }
 
 $psi = [System.Diagnostics.ProcessStartInfo]@{
-    FileName               = $ff.Source
+    FileName               = $ffPath
     Arguments              = "-y -hide_banner -loglevel error -f dshow -i `"audio=$Device`" -t 300 -ar 16000 -ac 1 `"$Wav`""
     RedirectStandardInput  = $true
     UseShellExecute        = $false
