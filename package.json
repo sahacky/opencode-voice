@@ -1,0 +1,11 @@
+{
+  "name": "opencode-voice",
+  "version": "0.1.0",
+  "description": "Voice input for opencode: /r to record, /s to stop — whisper transcript lands in the TUI prompt input",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "MIT"
+}
