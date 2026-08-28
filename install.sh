@@ -57,6 +57,7 @@ if [ "$is_wsl" -eq 1 ]; then
     PS="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
     [ -x "$PS" ] || die "powershell.exe не найден — это WSL2?"
 
+    # </dev/null обязательно: powershell иначе съедает stdin-пайп с текстом скрипта (curl | bash)
     if "$PS" -NoProfile -Command '
         $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
         $c = Get-Command ffmpeg -ErrorAction SilentlyContinue
@@ -64,7 +65,7 @@ if [ "$is_wsl" -eq 1 ]; then
         $p = "$env:USERPROFILE\.voice\bin\ffmpeg.exe"
         if (Test-Path $p) { $p; exit 0 }
         exit 1
-    ' >/dev/null 2>&1; then
+    ' >/dev/null 2>&1 </dev/null; then
         ok "ffmpeg на стороне Windows уже есть"
     else
         say "ставлю ffmpeg на сторону Windows (~100 МБ, сборка BtbN с GitHub)"
@@ -80,7 +81,7 @@ if [ "$is_wsl" -eq 1 ]; then
             Copy-Item $exe.FullName "$dir\ffmpeg.exe" -Force
             Remove-Item $zip -Force
             Remove-Item "$env:TEMP\ffmpeg-x" -Recurse -Force
-       '
+       ' >/dev/null 2>&1 </dev/null
         ok "ffmpeg установлен в %USERPROFILE%\\.voice\\bin"
     fi
 else
