@@ -14,10 +14,17 @@
 set -euo pipefail
 
 MODEL="${VOICE_MODEL:-small}"   # tiny (~75 МБ) | base (~142 МБ) | small (~466 МБ)
-# при запуске через curl | bash исходников рядом нет — скачиваем во временный каталог
+
+# при запуске через curl | bash исходников рядом нет — скачиваем из репозитория
 SRC_DIR=""
-if [ -f "$(dirname "${BASH_SOURCE[0]:-$0}")/src/index.ts" ]; then
-    SRC_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")/src"
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}" 2>/dev/null)" 2>/dev/null && pwd)"
+if [ -n "$SELF" ] && [ -f "$SELF/src/index.ts" ]; then
+    SRC_DIR="$SELF/src"
+else
+    say "скачиваю исходники opencode-voice"
+    TMP="$(mktemp -d)"
+    curl -fsSL https://github.com/sahacky/opencode-voice/archive/refs/heads/main.tar.gz | tar -xz -C "$TMP" --strip-components=1
+    SRC_DIR="$TMP/src"
 fi
 
 say()  { printf '\033[1;36m→\033[0m %s\n' "$*"; }
