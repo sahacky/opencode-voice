@@ -50,20 +50,29 @@ if [ "$is_wsl" -eq 1 ]; then
     PS="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
     [ -x "$PS" ] || die "powershell.exe не найден — это WSL2?"
 
-    if "$PS" -NoProfile -Command 'try { $c = Get-Command ffmpeg -ErrorAction Stop; $c.Source } catch { $p = "$env:USERPROFILE\.voice\bin\ffmpeg.exe"; if (Test-Path $p) { $p } else { exit 1 } }' >/dev/null 2>&1; then
+    if "$PS" -NoProfile -Command '
+        $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
+        $c = Get-Command ffmpeg -ErrorAction SilentlyContinue
+        if ($c) { $c.Source; exit 0 }
+        $p = "$env:USERPROFILE\.voice\bin\ffmpeg.exe"
+        if (Test-Path $p) { $p; exit 0 }
+        exit 1
+    ' >/dev/null 2>&1; then
         ok "ffmpeg на стороне Windows уже есть"
     else
-        say "ставлю ffmpeg на сторону Windows (~90 МБ)"
+        say "ставлю ffmpeg на сторону Windows (~100 МБ, сборка BtbN с GitHub)"
         "$PS" -NoProfile -Command '
             $ErrorActionPreference = "Stop"
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
             $dir = "$env:USERPROFILE\.voice\bin"
             New-Item -ItemType Directory -Force -Path $dir | Out-Null
             $zip = "$env:TEMP\ffmpeg.zip"
-            Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $zip
+            Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile $zip
             Expand-Archive -Path $zip -DestinationPath "$env:TEMP\ffmpeg-x" -Force
             $exe = Get-ChildItem "$env:TEMP\ffmpeg-x" -Recurse -Filter ffmpeg.exe | Select-Object -First 1
             Copy-Item $exe.FullName "$dir\ffmpeg.exe" -Force
-            Remove-Item $zip, "$env:TEMP\ffmpeg-x" -Recurse -Force
+            Remove-Item $zip -Force
+            Remove-Item "$env:TEMP\ffmpeg-x" -Recurse -Force
        '
         ok "ffmpeg установлен в %USERPROFILE%\\.voice\\bin"
     fi
@@ -101,7 +110,10 @@ fi
 ok "whisper-cli: $WHISPER_BIN"
 
 if [ ! -s "$MODEL_FILE" ]; then
-    say "скачиваю модель ggml-$MODEL.bin (~$([ "$MODEL" = small ] && echo 466 || echo 142) МБ)"
+    case "$MODEL" in
+        tiny) size=75 ;; base) size=142 ;; *) size=466 ;;
+    esac
+    say "скачиваю модель ggml-$MODEL.bin (~$size МБ)"
     mkdir -p "$VOICE_HOME/models"
     curl -fL --retry 3 -o "$MODEL_FILE.part" \
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$MODEL.bin"
