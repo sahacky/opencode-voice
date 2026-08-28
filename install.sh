@@ -13,6 +13,10 @@
 # После установки перезапусти opencode.
 set -euo pipefail
 
+say()  { printf '\033[1;36m→\033[0m %s\n' "$*"; }
+ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
 MODEL="${VOICE_MODEL:-small}"   # tiny (~75 МБ) | base (~142 МБ) | small (~466 МБ)
 
 # при запуске через curl | bash исходников рядом нет — скачиваем из репозитория
@@ -26,10 +30,6 @@ else
     curl -fsSL https://github.com/sahacky/opencode-voice/archive/refs/heads/main.tar.gz | tar -xz -C "$TMP" --strip-components=1
     SRC_DIR="$TMP/src"
 fi
-
-say()  { printf '\033[1;36m→\033[0m %s\n' "$*"; }
-ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
-die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
 # ── 1. Среда ─────────────────────────────────────────────────────────────
 if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
