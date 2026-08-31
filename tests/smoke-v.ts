@@ -32,7 +32,9 @@ try {
 
 const rep = readFileSync(join(homedir(), ".config", "opencode-voice", "diag.txt"), "utf8")
 console.log(rep)
-const mustHave = ["✓ модель", "ffmpeg"]
+// WSL-ветка диагностики не проверяет ffmpeg (он на стороне Windows) —
+// обязательные шаги только те, что есть на обеих платформах
+const mustHave = ["✓ модель", "✓ запись"]
 for (const line of mustHave) {
     if (!rep.includes(line)) {
         console.error(`FAIL: в отчёте нет «${line}»`)

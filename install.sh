@@ -302,7 +302,8 @@ if [ ! -x "$WHISPER_BIN" ]; then
     command -v cmake >/dev/null || apt_install cmake build-essential git || die "нет cmake/компилятора и нет sudo для их установки"
     mkdir -p "$VOICE_HOME"
     [ -d "$WHISPER_DIR" ] || git clone --depth 1 --branch "$WHISPER_REF" https://github.com/ggml-org/whisper.cpp "$WHISPER_DIR"
-    cmake -S "$WHISPER_DIR" -B "$WHISPER_DIR/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
+    # BUILD_SHARED_LIBS=OFF: whisper-cli не должен зависеть от libwhisper.so в LD_LIBRARY_PATH
+    cmake -S "$WHISPER_DIR" -B "$WHISPER_DIR/build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF >/dev/null
     cmake --build "$WHISPER_DIR/build" --config Release -j"$(nproc)" >/dev/null
 fi
 [ -x "$WHISPER_BIN" ] || die "сборка whisper-cli не удалась"
