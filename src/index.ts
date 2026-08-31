@@ -21,15 +21,33 @@ const isWSL = (() => {
     catch { return false }
 })()
 
-function cleanText(raw: string): string {
-    let text = raw.split(/\s+/).join(" ").trim()
+// HOME из окружения приоритетнее системного homedir — позволяет переопределять каталог (тесты, песочницы)
+const homeDir = () => process.env.HOME || homedir()
 
-    for (const p of [/\bэ+\b/gi, /\bэм+\b/gi, /\bээ+\b/gi, /\bм+м+\b/gi, /\bну+ в общем\b/gi, /\bкороче говоря\b/gi]) {
+export function cleanText(raw: string): string {
+    // невербальные вставки whisper ([музыка], (шум)) — вырезаются целиком в любом месте
+    let text = raw.replace(/[\[\(][^\]\)]*[\]\)]/g, " ")
+
+    text = text.split(/\s+/).join(" ").trim()
+
+    // слова-паразиты; границы слов — юникод-лукэраунды: \b в JS не знает кириллицу
+    for (const p of [
+        /(?<![\p{L}\p{N}])э+(?![\p{L}\p{N}])/giu,
+        /(?<![\p{L}\p{N}])эм+(?![\p{L}\p{N}])/giu,
+        /(?<![\p{L}\p{N}])м{2,}(?![\p{L}\p{N}])/giu,
+        /(?<![\p{L}\p{N}])ну+ в общем(?![\p{L}\p{N}])/giu,
+        /(?<![\p{L}\p{N}])короче говоря(?![\p{L}\p{N}])/giu,
+    ]) {
         text = text.replace(p, " ")
     }
     text = text.replace(/\*+/g, " ")
+    text = text.replace(/[ \t]{2,}/g, " ").trim()
 
-    for (const [p, r] of [[/\bновая строка\b/gi, "\n"], [/\bабзац\b/gi, "\n\n"], [/\bотступ\b/gi, "\t"]] as const) {
+    for (const [p, r] of [
+        [/(?<![\p{L}\p{N}])новая строка(?![\p{L}\p{N}])/giu, "\n"],
+        [/(?<![\p{L}\p{N}])абзац(?![\p{L}\p{N}])/giu, "\n\n"],
+        [/(?<![\p{L}\p{N}])отступ(?![\p{L}\p{N}])/giu, "\t"],
+    ] as const) {
         text = text.replace(p, r)
     }
 
@@ -48,7 +66,7 @@ export const OpencodeVoice = async ({ client }: any, options?: any) => {
     // Приоритет: опции из opencode.json > ~/.config/opencode-voice/config.json > дефолты
     let fileOpts: any = {}
     try {
-        fileOpts = JSON.parse(readFileSync(join(homedir(), ".config", "opencode-voice", "config.json"), "utf8"))
+        fileOpts = JSON.parse(readFileSync(join(homeDir(), ".config", "opencode-voice", "config.json"), "utf8"))
     } catch {}
 
     const opts = {
@@ -60,8 +78,8 @@ export const OpencodeVoice = async ({ client }: any, options?: any) => {
         audioSource: "default",              // pulse-источник или alsa-устройство
         recorder: import.meta.dir + "/voice-rec.ps1",     // WSL: скрипт записи (идёт в комплекте)
         ffmpegBin: "ffmpeg",                 // нативный Linux: бинарь ffmpeg
-        whisperBin: join(homedir(), ".voice", "whisper.cpp", "build", "bin", "whisper-cli"),
-        model: join(homedir(), ".voice", "models", "ggml-large-v3-turbo-q5_0.bin"),
+        whisperBin: join(homeDir(), ".voice", "whisper.cpp", "build", "bin", "whisper-cli"),
+        model: join(homeDir(), ".voice", "models", "ggml-large-v3-turbo-q5_0.bin"),
         debugLog: "",
         ...fileOpts,
         ...(options || {}),
@@ -509,7 +527,7 @@ export const OpencodeVoice = async ({ client }: any, options?: any) => {
             step(`буфер обмена (${clipBin})`, clipOk, clipOk ? "" : `не найден; apt install ${clipBin === "wl-copy" ? "wl-clipboard" : "xclip"}`)
         }
 
-        const diagPath = join(homedir(), ".config", "opencode-voice", "diag.txt")
+        const diagPath = join(homeDir(), ".config", "opencode-voice", "diag.txt")
         try {
             mkdirSync(dirname(diagPath), { recursive: true })
             writeFileSync(diagPath, rep.join("\n") + "\n")
@@ -521,7 +539,7 @@ export const OpencodeVoice = async ({ client }: any, options?: any) => {
 
     // слэш-команды должны существовать, чтобы хук вообще срабатывал
     const ensureCommand = (name: string, description: string) => {
-        const f = join(homedir(), ".config", "opencode", "commands", `${name}.md`)
+        const f = join(homeDir(), ".config", "opencode", "commands", `${name}.md`)
         try {
             if (!existsSync(f)) {
                 mkdirSync(dirname(f), { recursive: true })

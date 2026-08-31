@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
+    "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
