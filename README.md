@@ -23,6 +23,10 @@
   отправкой) и параллельно кладётся в буфер обмена
 - `/v` — диагностика: ffmpeg и его аудио-входы, тестовая запись 2 с, модель, whisper,
   буфер обмена; полный отчёт — в `~/.config/opencode-voice/diag.txt`
+- `/m` — следующая модель по кольцу (мгновенно среди скачанных; на полном обороте —
+  предложение докачать лучшую недостающую, повторный `/m` в течение 15 с = согласие)
+- `/u` — самообновление: сверяет плагин с `main` в репозитории и молча перезапускает
+  установщик с текущей моделью; останется перезапустить opencode
 
 Работает в WSL2 и на нативном Linux.
 
@@ -31,6 +35,7 @@
 - [Требования](#требования)
 - [Быстрая установка](#быстрая-установка)
 - [Модели](#модели)
+- [Обновление](#обновление)
 - [Как это работает](#как-это-работает)
 - [Опции](#опции)
 - [Troubleshooting](#troubleshooting)
@@ -80,8 +85,18 @@ curl -fsSL https://raw.githubusercontent.com/sahacky/opencode-voice/main/install
 | `medium` | ~1.5 ГБ | проигрывает turbo по качеству и скорости — брать не стоит |
 | `base` / `tiny` | ~142 / ~75 МБ | только «чтобы было» |
 
-Смена модели без переустановки: `VOICE_MODEL=small bash install.sh` — скачается новая,
-путь пропишется в конфиг, старая останется в `~/.voice/models/`.
+Смена модели:
+- из TUI — `/m`: листает скачанные по кольцу, недостающие предлагает докачать
+  (согласие — повторный `/m` в течение 15 с, прогресс — тостами);
+- из консоли — `VOICE_MODEL=small bash install.sh` — то же самое одним прогоном,
+  старые модели остаются в `~/.voice/models/`.
+
+## Обновление
+
+- из TUI — `/u`: плагин сравнит себя с `main` в репозитории и запустит `install.sh`
+  с текущей моделью (ничего не перекачивает без нужды); после — перезапуск opencode;
+- из консоли — `curl -fsSL https://raw.githubusercontent.com/sahacky/opencode-voice/main/install.sh | bash` или `bash install.sh` из клона:
+  переиспользует уже собранный whisper.cpp и скачанные модели.
 
 ## Как это работает
 
@@ -124,6 +139,10 @@ curl -fsSL https://raw.githubusercontent.com/sahacky/opencode-voice/main/install
 | `ffmpegBin` | `"ffmpeg"` | Нативный Linux: путь к ffmpeg |
 | `whisperBin` | `~/.voice/whisper.cpp/build/bin/whisper-cli` | Путь к `whisper-cli` |
 | `model` | `~/.voice/models/ggml-large-v3-turbo-q5_0.bin` | Путь к ggml-модели |
+| `modelUrl` | ссылка HuggingFace c `{name}` | Откуда `/m` качает модели |
+| `updateUrl` | raw `src/index.ts` из main | Что `/u` считает «эталоном» |
+| `updateCmd` | `curl … install.sh \| VOICE_MODEL={model} bash` | Команда самообновления |
+| `confirmMs` | `15000` | Сколько `/m` ждёт повтор как согласие на докачку |
 | `debugLog` | `""` | Путь к логу диагностики; пусто — лог выключен |
 
 ## Troubleshooting
@@ -170,6 +189,7 @@ shellcheck -S warning install.sh # линтер установщика
 | `tests/recording.test.ts` | полные циклы `/r → /s` и `/v` на стабах |
 | `tests/stubs/` | фейковые `ffmpeg` / `whisper` / `xclip` — happy-path'ы без микрофона |
 | `tests/smoke-v.ts` | `/v` на реально установленном плагине (используется в CI) |
+| `tests/commands.test.ts` | `/m` и `/u`: кольцо моделей, докачка, самообновление |
 
 ## Лицензия
 

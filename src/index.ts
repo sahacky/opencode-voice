@@ -8,13 +8,22 @@
 //                   остановка записи — файл-флаг в TEMP Windows (voice-rec.ps1)
 //   нативный Linux — ffmpeg (pulse/alsa, с авто-fallback pulse → alsa) напрямую,
 //                   остановка по SIGINT, буфер через wl-copy (Wayland) или xclip (X11)
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 
 declare const Bun: any
 
 const PS = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+
+const VERSION = "0.3.0"
+
+// порядок = направление цикла /m (по возрастанию качества/размера)
+const MODELS: Array<[name: string, sizeMb: number]> = [
+    ["tiny", 75], ["base", 142], ["small", 466], ["medium", 1462],
+    ["large-v3-turbo-q5_0", 547], ["large-v3-turbo", 1549], ["large-v3", 2951],
+]
+const RAW_BASE = "https://raw.githubusercontent.com/sahacky/opencode-voice/main"
 
 // HOME из окружения приоритетнее системного homedir — позволяет переопределять каталог (тесты, песочницы)
 const homeDir = () => process.env.HOME || homedir()
@@ -83,6 +92,10 @@ export const OpencodeVoice = async ({ client }: any, options?: any) => {
         ffmpegBin: "ffmpeg",                 // нативный Linux: бинарь ffmpeg
         whisperBin: join(homeDir(), ".voice", "whisper.cpp", "build", "bin", "whisper-cli"),
         model: join(homeDir(), ".voice", "models", "ggml-large-v3-turbo-q5_0.bin"),
+        modelUrl: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{name}.bin",
+        updateUrl: RAW_BASE + "/src/index.ts",
+        updateCmd: `curl -fsSL ${RAW_BASE}/install.sh | VOICE_MODEL={model} bash`,
+        confirmMs: 15_000,                   // сколько ждём повторный /m как согласие на докачку
         debugLog: "",
         ...fileOpts,
         ...(options || {}),
@@ -168,6 +181,21 @@ const wslPath = (win: string) => `${process.env.VOICE_WIN_MNT || "/mnt"}/${win[0
         return out
     }
 
+    // PowerShell не принимает -File по UNC (\\wsl.localhost\…), поэтому скрипт записи
+    // копируется в локальный для Windows TEMP и запускается оттуда
+    async function prepareRecorder(): Promise<string> {
+        if (recorderWin) return recorderWin
+        const temp = await getWinTemp()
+        if (!temp) return ""
+        try {
+            writeFileSync(wslPath(`${temp}\\voice-rec.ps1`), readFileSync(opts.recorder))
+            recorderWin = `${temp}\\voice-rec.ps1`
+        } catch {
+            try { recorderWin = await toWinPath(opts.recorder) } catch { recorderWin = "" }
+        }
+        return recorderWin
+    }
+
     async function toClipboard(text: string) {
         if (isWSL) {
             try {
@@ -225,7 +253,8 @@ const wslPath = (win: string) => `${process.env.VOICE_WIN_MNT || "/mnt"}/${win[0
             if (isWSL) {
                 const temp = await getWinTemp()
                 if (!temp) { await toast("voice: не удалось определить TEMP Windows", "error"); return }
-                if (!recorderWin) recorderWin = await toWinPath(opts.recorder)
+                if (!recorderWin) recorderWin = await prepareRecorder()
+                if (!recorderWin) { await toast("voice: рекордер voice-rec.ps1 недоступен", "error"); return }
 
                 const s = stamp()
                 const wavWin = `${temp}\\voice-rec-${s}.wav`
@@ -421,6 +450,7 @@ const wslPath = (win: string) => `${process.env.VOICE_WIN_MNT || "/mnt"}/${win[0
 
         const modelOk = existsSync(opts.model) && statSync(opts.model).size > 50_000_000
         step("модель", modelOk, modelOk ? opts.model : `не найдена или слишком мала: ${opts.model}`)
+        rep.push(`скачаны модели: ${[...downloadedModels(dirname(opts.model))].sort().join(", ") || "—"}`)
 
         const testWav = join(tmpdir(), `voice-diag-${stamp()}.wav`)
         let recOk = false
@@ -432,7 +462,10 @@ const wslPath = (win: string) => `${process.env.VOICE_WIN_MNT || "/mnt"}/${win[0
                 detail = "не удалось определить TEMP Windows"
             } else {
                 try {
-                    if (!recorderWin) recorderWin = await toWinPath(opts.recorder)
+                    await prepareRecorder()
+                    if (!recorderWin) {
+                        detail = "voice-rec.ps1 не скопирован в TEMP Windows"
+                    } else {
                     const wavWin = `${temp}\\voice-diag.wav`
                     const flagWin = `${temp}\\voice-diag.stop`
                     const wavL = wslPath(wavWin)
@@ -456,6 +489,7 @@ const wslPath = (win: string) => `${process.env.VOICE_WIN_MNT || "/mnt"}/${win[0
                     }
                     rmSync(wavL, { force: true })
                     rmSync(flagL, { force: true })
+                    }
                 } catch (e: any) {
                     detail = `${e}`
                 }
@@ -542,6 +576,138 @@ const wslPath = (win: string) => `${process.env.VOICE_WIN_MNT || "/mnt"}/${win[0
             allOk ? "success" : "error", 10000)
     }
 
+    // точечная правка ~/.config/opencode-voice/config.json с сохранением остальных ключей
+    function setConfig(key: string, value: string) {
+        try {
+            const cfgPath = join(homeDir(), ".config", "opencode-voice", "config.json")
+            let cfg: any = {}
+            try { cfg = JSON.parse(readFileSync(cfgPath, "utf8")) } catch {}
+            if (typeof cfg !== "object" || !cfg) cfg = {}
+            cfg[key] = value
+            mkdirSync(dirname(cfgPath), { recursive: true })
+            writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n")
+        } catch (e) {
+            dbg(`setConfig(${key}) failed: ${e}`)
+        }
+    }
+
+    async function download(url: string, dest: string): Promise<void> {
+        const part = `${dest}.part`
+        rmSync(part, { force: true })
+        const p = Bun.spawn(["curl", "-fL", "--retry", "3", "-o", part, url],
+            { stdin: "ignore", stdout: "ignore", stderr: "pipe" })
+        const errP = new Response(p.stderr).text()
+        const hb = setInterval(() => {
+            try { dbg(`download ${url}: ${Math.round(statSync(part).size / 1048576)} МБ`) } catch {}
+        }, 2000)
+        try {
+            const code = await p.exited
+            if (code !== 0) throw new Error(`curl exit ${code}: ${firstLine(await safeText(errP))}`)
+            if (!existsSync(part) || statSync(part).size < 1_000_000) throw new Error("файл не скачался или слишком мал")
+            mkdirSync(dirname(dest), { recursive: true })
+            renameSync(part, dest)
+        } finally {
+            clearInterval(hb)
+            rmSync(part, { force: true })
+        }
+    }
+
+    const modelName = (p: string) => basename(p).replace(/^ggml-/, "").replace(/\.bin$/, "")
+
+    function downloadedModels(dir: string): Set<string> {
+        const have = new Set<string>()
+        try {
+            for (const f of readdirSync(dir)) {
+                const m = /^ggml-(.+)\.bin$/.exec(f)
+                if (m) have.add(m[1]!)
+            }
+        } catch {}
+        return have
+    }
+
+    // /m — умное кольцо: листает скачанные модели, переключая сразу; когда кольцо
+    // замкнулось — предлагает докачать лучшую недостающую (повторный /m = согласие)
+    let pendingDownload: { name: string; until: number } | null = null
+
+    async function switchModel() {
+        if (rec) { await toast("Идёт запись — закончи её через /s", "warning"); return }
+        if (pendingDownload && Date.now() >= pendingDownload.until) pendingDownload = null
+        const dir = dirname(opts.model)
+        const have = downloadedModels(dir)
+        const cur = modelName(opts.model)
+
+        if (pendingDownload) {
+            const { name } = pendingDownload
+            pendingDownload = null
+            const sizeMb = MODELS.find(([n]) => n === name)?.[1] ?? 0
+            await toast(`голос: качаю модель ${name} (~${sizeMb} МБ)…`, "info", 4000)
+            try {
+                await download(opts.modelUrl.replaceAll("{name}", name), join(dir, `ggml-${name}.bin`))
+            } catch (e: any) {
+                dbg(`model download failed: ${e}`)
+                await toast(`голос: не удалось скачать ${name} — ${e}`, "error", 8000)
+                return
+            }
+            have.add(name)
+        }
+
+        const ring = MODELS.filter(([n]) => have.has(n)).map(([n]) => n)
+        const next = ring.length ? ring[(Math.max(ring.indexOf(cur), 0) + 1) % ring.length]! : cur
+        if (next !== cur) {
+            const target = join(dir, `ggml-${next}.bin`)
+            opts.model = target
+            setConfig("model", target)
+            await toast(`голос: модель ${cur} → ${next} · скачаны: ${ring.join(" → ")}`, "success", 5000)
+            dbg(`model switched: ${cur} -> ${next}`)
+            return
+        }
+
+        const missing = ["large-v3-turbo-q5_0", "large-v3-turbo", "large-v3", "medium", "small", "base", "tiny"]
+            .find((n) => !have.has(n)) ?? "tiny"
+        const sizeMb = MODELS.find(([n]) => n === missing)?.[1] ?? 0
+        pendingDownload = { name: missing, until: Date.now() + (opts.confirmMs || 15_000) }
+        await toast(`голос: скачанные кончились. Лучшая недостающая — ${missing} (~${sizeMb} МБ): ещё раз /m — скачать`, "info", 8000)
+    }
+
+    // /u — сверка с main в репозитории и самоперезапуск установщика
+    async function selfUpdate() {
+        await toast("voice: проверяю обновления…", "info", 1500)
+        let remote = ""
+        try {
+            remote = await (await fetch(opts.updateUrl)).text()
+        } catch (e) {
+            dbg(`update check failed: ${e}`)
+            await toast("voice: не удалось проверить обновления (сеть?)", "error")
+            return
+        }
+        let local = ""
+        try { local = readFileSync(import.meta.path, "utf8") } catch {}
+        if (remote === local) {
+            await toast(`voice: обновлений нет (v${VERSION})`, "success")
+            return
+        }
+
+        await toast("voice: обновляюсь — это займёт пару минут…", "info", 4000)
+        const cur = basename(opts.model).replace(/\.bin$/, "")
+        try {
+            const p = Bun.spawn(["bash", "-c", opts.updateCmd.replaceAll("{model}", cur)],
+                { stdin: "ignore", stdout: "ignore", stderr: "pipe" })
+            const errP = new Response(p.stderr).text()
+            const code = await p.exited
+            if (code !== 0) {
+                const why = firstLine(await safeText(errP))
+                dbg(`update failed: exit ${code}: ${why}`)
+                await toast(`voice: обновление не удалось${why ? `: ${why}` : ""}`, "error", 8000)
+                return
+            }
+        } catch (e: any) {
+            dbg(`update spawn failed: ${e}`)
+            await toast(`voice: обновление не удалось: ${e}`, "error", 8000)
+            return
+        }
+        await toast(`voice: обновлено (было v${VERSION}) — перезапусти opencode`, "success", 8000)
+    }
+
     // слэш-команды должны существовать, чтобы хук вообще срабатывал
     const ensureCommand = (name: string, description: string) => {
         const f = join(homeDir(), ".config", "opencode", "commands", `${name}.md`)
@@ -555,10 +721,12 @@ const wslPath = (win: string) => `${process.env.VOICE_WIN_MNT || "/mnt"}/${win[0
     ensureCommand("r", "● Голос: начать запись")
     ensureCommand("s", "■ Голос: закончить — текст в поле ввода")
     ensureCommand("v", "🔧 Голос: проверить микрофон и whisper")
+    ensureCommand("m", "⇄ Голос: следующая модель по кольцу; на полном круге — докачка")
+    ensureCommand("u", "⤓ Голос: обновить плагин")
 
     return {
         "command.execute.before": async (input: { command: string }, output: { parts: any[] }) => {
-            if (input.command !== "r" && input.command !== "s" && input.command !== "v") return
+            if (!["r", "s", "v", "m", "u"].includes(input.command)) return
             dbg(`hook fired: command=${input.command}`)
             output.parts.length = 0
             if (input.command === "r") {
@@ -567,6 +735,12 @@ const wslPath = (win: string) => `${process.env.VOICE_WIN_MNT || "/mnt"}/${win[0
             } else if (input.command === "s") {
                 await stop()
                 throw new Error("voice: готово")
+            } else if (input.command === "m") {
+                await switchModel()
+                throw new Error("voice: модель переключена")
+            } else if (input.command === "u") {
+                await selfUpdate()
+                throw new Error("voice: обновление завершено")
             } else {
                 await diag()
                 throw new Error("voice: диагностика завершена")

@@ -109,6 +109,16 @@ describe("WSL: запись /r → /s через файл-флаг", () => {
         expect(prompts).toEqual(["Тестовая расшифровка из стаба."])
         expect(readFileSync(join(home, "dbg.log"), "utf8")).toContain("clipboard failed")
     })
+
+    test("рекордер-файл недоступен — копирование в TEMP срывается, fallback на UNC", async () => {
+        const cfg = join(home, ".config", "opencode-voice", "config.json")
+        writeFileSync(cfg, JSON.stringify({ ...JSON.parse(readFileSync(cfg, "utf8")), recorder: "/nonexistent-recorder.ps1" }))
+        hook = await makeHook()
+        await expect(hook({ command: "r" }, { parts: [] })).rejects.toThrow("voice: запись начата")
+        await new Promise((res) => setTimeout(res, 400))
+        await expect(hook({ command: "s" }, { parts: [] })).rejects.toThrow("voice: готово")
+        expect(prompts).toEqual(["Тестовая расшифровка из стаба."])
+    })
 })
 
 describe("WSL: /v", () => {
@@ -141,11 +151,19 @@ describe("WSL: /v", () => {
         expect(rep).toContain("dshow device not found; wav 0 Б")
     })
 
-    test("wslpath упал — внешний catch диагностики ловит исключение", async () => {
+    test("wslpath упал — рекордер не копируется, шаг записи честно провален", async () => {
         hook = await makeHook()
         process.env.VOICE_SPAWN_THROW = "wslpath"
         await expect(hook({ command: "v" }, { parts: [] })).rejects.toThrow("voice: диагностика завершена")
         const rep = readFileSync(join(home, ".config", "opencode-voice", "diag.txt"), "utf8")
-        expect(rep).toContain("stub: spawn refused (wslpath)")
+        expect(rep).toContain("voice-rec.ps1 не скопирован в TEMP Windows")
+    })
+
+    test("spawn рекордера бросил — внешний catch диагностики ловит исключение", async () => {
+        hook = await makeHook()
+        process.env.VOICE_SPAWN_THROW = "-File"
+        await expect(hook({ command: "v" }, { parts: [] })).rejects.toThrow("voice: диагностика завершена")
+        const rep = readFileSync(join(home, ".config", "opencode-voice", "diag.txt"), "utf8")
+        expect(rep).toContain("stub: spawn refused (-File)")
     })
 })
