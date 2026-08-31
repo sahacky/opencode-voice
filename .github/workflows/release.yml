@@ -12,6 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - name: тесты перед релизом
+        run: bun test
       - name: собрать архив
         run: |
           mkdir -p dist

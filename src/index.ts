@@ -16,11 +16,6 @@ declare const Bun: any
 
 const PS = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
 
-const isWSL = (() => {
-    try { return /microsoft/i.test(readFileSync("/proc/sys/kernel/osrelease", "utf8")) }
-    catch { return false }
-})()
-
 // HOME из окружения приоритетнее системного homedir — позволяет переопределять каталог (тесты, песочницы)
 const homeDir = () => process.env.HOME || homedir()
 
@@ -63,6 +58,15 @@ export function cleanText(raw: string): string {
 }
 
 export const OpencodeVoice = async ({ client }: any, options?: any) => {
+    // платформа определяется на момент создания плагина; VOICE_PLATFORM=native|wsl
+    // принудительно переопределяет авто-детект (тесты, отладка на нетипичных машинах)
+    const isWSL = (() => {
+        if (process.env.VOICE_PLATFORM === "native") return false
+        if (process.env.VOICE_PLATFORM === "wsl") return true
+        try { return /microsoft/i.test(readFileSync("/proc/sys/kernel/osrelease", "utf8")) }
+        catch { return false }
+    })()
+
     // Приоритет: опции из opencode.json > ~/.config/opencode-voice/config.json > дефолты
     let fileOpts: any = {}
     try {
