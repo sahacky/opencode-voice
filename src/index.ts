@@ -63,8 +63,7 @@ export const OpencodeVoice = async ({ client }: any, options?: any) => {
     const isWSL = (() => {
         if (process.env.VOICE_PLATFORM === "native") return false
         if (process.env.VOICE_PLATFORM === "wsl") return true
-        try { return /microsoft/i.test(readFileSync("/proc/sys/kernel/osrelease", "utf8")) }
-        catch { return false }
+        try { return /microsoft/i.test(readFileSync("/proc/sys/kernel/osrelease", "utf8")) } catch { return false }
     })()
 
     // Приоритет: опции из opencode.json > ~/.config/opencode-voice/config.json > дефолты
@@ -120,7 +119,8 @@ export const OpencodeVoice = async ({ client }: any, options?: any) => {
         return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
     }
 
-    const wslPath = (win: string) => `/mnt/${win[0].toLowerCase()}${win.slice(2)}`.replace(/\\/g, "/")
+    // точка монтирования дисков Windows; переопределяется тестами на локальный каталог
+const wslPath = (win: string) => `${process.env.VOICE_WIN_MNT || "/mnt"}/${win[0].toLowerCase()}${win.slice(2)}`.replace(/\\/g, "/")
 
     const effDriver = () => driverOverride || opts.audioDriver
 
@@ -431,14 +431,14 @@ export const OpencodeVoice = async ({ client }: any, options?: any) => {
             if (!temp) {
                 detail = "не удалось определить TEMP Windows"
             } else {
-                if (!recorderWin) recorderWin = await toWinPath(opts.recorder)
-                const wavWin = `${temp}\\voice-diag.wav`
-                const flagWin = `${temp}\\voice-diag.stop`
-                const wavL = wslPath(wavWin)
-                const flagL = wslPath(flagWin)
-                rmSync(flagL, { force: true })
-                rmSync(wavL, { force: true })
                 try {
+                    if (!recorderWin) recorderWin = await toWinPath(opts.recorder)
+                    const wavWin = `${temp}\\voice-diag.wav`
+                    const flagWin = `${temp}\\voice-diag.stop`
+                    const wavL = wslPath(wavWin)
+                    const flagL = wslPath(flagWin)
+                    rmSync(flagL, { force: true })
+                    rmSync(wavL, { force: true })
                     const p = Bun.spawn(
                         [PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", recorderWin, "-Wav", wavWin, "-StopFlag", flagWin],
                         { stdin: "ignore", stdout: "ignore", stderr: "pipe" },
@@ -527,7 +527,8 @@ export const OpencodeVoice = async ({ client }: any, options?: any) => {
 
         if (!isWSL) {
             const clipBin = process.env.WAYLAND_DISPLAY ? "wl-copy" : "xclip"
-            const clipOk = !!Bun.which(clipBin)
+            // PATH передаётся явно: иначе бинаррь ищется по окружению на момент старта процесса
+            const clipOk = !!Bun.which(clipBin, { PATH: process.env.PATH })
             step(`буфер обмена (${clipBin})`, clipOk, clipOk ? "" : `не найден; apt install ${clipBin === "wl-copy" ? "wl-clipboard" : "xclip"}`)
         }
 
