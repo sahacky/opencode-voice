@@ -1,0 +1,27 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: собрать архив
+        run: |
+          mkdir -p dist
+          cp install.sh LICENSE README.md dist/
+          cp -r src dist/
+          tar -czf "opencode-voice-${GITHUB_REF_NAME}.tar.gz" -C dist .
+          sha256sum "opencode-voice-${GITHUB_REF_NAME}.tar.gz" > "opencode-voice-${GITHUB_REF_NAME}.tar.gz.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            opencode-voice-${{ github.ref_name }}.tar.gz
+            opencode-voice-${{ github.ref_name }}.tar.gz.sha256
+          generate_release_notes: true

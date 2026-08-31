@@ -1,0 +1,64 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run typecheck
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+      - run: bash -n install.sh
+      - run: shellcheck -S warning install.sh
+
+  pwsh-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pwsh -NoProfile -Command '[scriptblock]::Create((Get-Content -Raw src/voice-rec.ps1)) | Out-Null'
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun test
+
+  # Полный прогон install.sh в чистом HOME на голой убунте без звука —
+  # кейс «чистый сервер/контейнер»: установка должна завершиться успешно,
+  # артефакты на месте, /v штатно рапортует о недоступном микрофоне.
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh в изолированном HOME
+        run: |
+          mkdir -p /tmp/fakehome
+          HOME=/tmp/fakehome VOICE_MODEL=tiny bash install.sh </dev/null
+      - name: артефакты установки
+        run: |
+          test -x /tmp/fakehome/.voice/whisper.cpp/build/bin/whisper-cli
+          test -s /tmp/fakehome/.voice/models/ggml-tiny.bin
+          test -f /tmp/fakehome/.config/opencode/plugins/opencode-voice.ts
+          test -f /tmp/fakehome/.config/opencode/plugins/voice-rec.ps1
+          for c in r s v; do test -f /tmp/fakehome/.config/opencode/commands/$c.md; done
+          grep -q '"model"' /tmp/fakehome/.config/opencode-voice/config.json
+          grep -q '"audioDriver"' /tmp/fakehome/.config/opencode-voice/config.json
+      - uses: oven-sh/setup-bun@v2
+      - name: /v smoke на установленном плагине
+        run: HOME=/tmp/fakehome bun tests/smoke-v.ts /tmp/fakehome/.config/opencode/plugins/opencode-voice.ts
